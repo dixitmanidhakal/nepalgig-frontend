@@ -1,79 +1,81 @@
 /**
- * GET /api/auth/verify?token=xxx&email=yyy
- * Called when user clicks the magic link in their email.
- * Validates the token via backend → sets session cookie → redirects by role.
+ * POST /api/auth/verify
+ * Called by the /auth/verify page with { token, phone }.
+ * Proxies to backend → gets sessionToken → sets httpOnly cookie → returns role.
+ *
+ * The /auth/verify PAGE (not this route) handles the UX and redirect.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { SESSION_COOKIE } from '@/lib/constants';
+import { z } from 'zod';
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = req.nextUrl;
-  const rawToken = searchParams.get('token');
-  const email    = searchParams.get('email');
+const schema = z.object({
+  token: z.string().min(10),
+  phone: z.string().min(7),
+});
 
-  if (!rawToken || !email) {
-    return NextResponse.redirect(new URL('/login?error=invalid_link', req.url));
-  }
-
-  const ipAddress =
-    req.headers.get('x-real-ip') ??
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim();
-
+export async function POST(req: NextRequest) {
   try {
-    const backendUrl = process.env.BACKEND_API_URL ?? 'http://localhost:4000';
+    const body   = await req.json() as { token?: string; phone?: string };
+    const parsed = schema.safeParse(body);
+
+    if (!parsed.success) {
+      return NextResponse.json({ error: 'token and phone are required' }, { status: 400 });
+    }
+
+    const ip = req.headers.get('x-real-ip')
+      ?? req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+      ?? 'unknown';
+
+    const backendUrl = process.env.BACKEND_URL ?? 'http://localhost:4000';
     const res = await fetch(`${backendUrl}/auth/verify`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        rawToken,
-        email: decodeURIComponent(email),
-        ipAddress,
-        userAgent: req.headers.get('user-agent'),
+        token:     parsed.data.token,
+        phone:     parsed.data.phone,
+        ipAddress: ip,
+        userAgent: req.headers.get('user-agent') ?? '',
       }),
     });
 
     const data = await res.json() as {
-      success: boolean;
+      success?:      boolean;
       sessionToken?: string;
-      role?: string;
-      error?: string;
+      role?:         string;
+      userId?:       string;
+      isNewUser?:    boolean;
+      error?:        string;
     };
 
-    if (!data.success || !data.sessionToken) {
-      const errorMap: Record<string, string> = {
-        expired:           'link_expired',
-        used:              'link_used',
-        invalid:           'invalid_link',
-        banned:            'account_banned',
-        too_many_attempts: 'too_many_attempts',
-      };
-      const code = errorMap[data.error ?? ''] ?? 'invalid_link';
-      return NextResponse.redirect(new URL(`/login?error=${code}`, req.url));
+    if (!res.ok || !data.success || !data.sessionToken) {
+      return NextResponse.json(
+        { success: false, error: data.error ?? 'verification_failed' },
+        { status: res.ok ? 401 : res.status }
+      );
     }
 
-    const dashboardUrl = getDashboard(data.role ?? 'pending');
-    const response = NextResponse.redirect(new URL(dashboardUrl, req.url));
+    // Set session cookie (httpOnly, secure in prod)
+    const response = NextResponse.json({
+      success:   true,
+      role:      data.role,
+      userId:    data.userId,
+      isNewUser: data.isNewUser,
+    });
+
     response.cookies.set(SESSION_COOKIE, data.sessionToken, {
       httpOnly: true,
       secure:   process.env.NODE_ENV === 'production',
       sameSite: 'lax',
-      maxAge:   30 * 24 * 60 * 60,
+      maxAge:   30 * 24 * 60 * 60,   // 30 days
       path:     '/',
     });
 
     return response;
+
   } catch (err) {
     console.error('[/api/auth/verify]', err);
-    return NextResponse.redirect(new URL('/login?error=server_error', req.url));
-  }
-}
-
-function getDashboard(role: string): string {
-  switch (role) {
-    case 'freelancer': return '/dashboard/freelancer';
-    case 'client':     return '/dashboard/client';
-    case 'admin':      return '/admin';
-    default:           return '/onboarding';
+    return NextResponse.json({ error: 'server_error' }, { status: 500 });
   }
 }
