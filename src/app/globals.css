@@ -2,41 +2,112 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── shadcn/ui CSS variables ──────────────────────────── */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
+    --background:            0 0% 100%;
+    --foreground:            222.2 84% 4.9%;
+    --card:                  0 0% 100%;
+    --card-foreground:       222.2 84% 4.9%;
+    --popover:               0 0% 100%;
+    --popover-foreground:    222.2 84% 4.9%;
+    --primary:               238 76% 55%;   /* indigo-600 */
+    --primary-foreground:    210 40% 98%;
+    --secondary:             210 40% 96.1%;
+    --secondary-foreground:  222.2 47.4% 11.2%;
+    --muted:                 210 40% 96.1%;
+    --muted-foreground:      215.4 16.3% 46.9%;
+    --accent:                210 40% 96.1%;
+    --accent-foreground:     222.2 47.4% 11.2%;
+    --destructive:           0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
-  }
-
-  .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
+    --border:                214.3 31.8% 91.4%;
+    --input:                 214.3 31.8% 91.4%;
+    --ring:                  238 76% 55%;
+    --radius:                0.75rem;       /* 12px — rounder for mobile */
   }
 }
 
+/* ── Mobile-first base resets ─────────────────────────── */
 @layer base {
-  * { @apply border-border; }
-  body { @apply bg-background text-foreground; }
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    overflow-x: hidden;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    overscroll-behavior-y: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Prevent iOS zoom on focus — font must be >= 16px */
+  input, textarea, select {
+    font-size: 16px;
+  }
+  @media (min-width: 768px) {
+    input, textarea, select { font-size: 14px; }
+  }
+
+  /* Minimum 44px tap targets for accessibility */
+  button, a, [role="button"] {
+    min-height: 44px;
+  }
 }
+
+/* ── PWA safe-area utilities ──────────────────────────── */
+@layer utilities {
+  .safe-top    { padding-top:    env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  .safe-x {
+    padding-left:  env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Uses svh (small viewport height) — correct on mobile with browser chrome */
+  .mobile-full { min-height: 100svh; }
+
+  /* Glassmorphism card — for use over gradient backgrounds */
+  .glass {
+    background: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+  }
+}
+
+/* ── Custom scrollbar (desktop only) ─────────────────── */
+@media (min-width: 768px) {
+  ::-webkit-scrollbar       { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+}
+
+/* ── Animations ───────────────────────────────────────── */
+@keyframes slide-up {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes bounce-in {
+  0%   { transform: scale(0.9);   opacity: 0; }
+  60%  { transform: scale(1.03);  opacity: 1; }
+  100% { transform: scale(1);     opacity: 1; }
+}
+
+.animate-slide-up  { animation: slide-up  0.35s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.animate-fade-in   { animation: fade-in   0.25s ease-out both; }
+.animate-bounce-in { animation: bounce-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
