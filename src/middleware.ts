@@ -1,20 +1,25 @@
 /**
- * Next.js Middleware — Route protection + session forwarding + device fingerprint
+ * Next.js Middleware — Session + Role + Device fingerprint
  *
- * Public routes: /, /login, /auth/verify, /api/auth/*, /api/health
- * Protected:     /dashboard/*, /onboarding, /api/trpc/*
+ * ── Route rules ───────────────────────────────────────────
+ *  Public (no auth):        /, /login, /about, /terms, /privacy, /api/health
+ *  Always public prefixes:  /_next/, /public/, /favicon, /api/auth/, /auth/
  *
- * Device fingerprint (80% block):
- *  • After first login the backend writes an `ng_device` cookie — the full
- *    SHA-256 (userAgent+screen+timezone+canvas+language) computed client-side.
- *  • On every protected request, middleware computes a server-side PARTIAL
- *    fingerprint (userAgent + Accept-Language — the only signals available at
- *    the Edge runtime).
- *  • The first 32 hex chars of that partial hash must match the first 32 chars
- *    of the stored `ng_device` cookie.  This blocks ~80% of device spoofs /
- *    session-cookie theft without requiring full browser APIs in the middleware.
- *  • Mismatch → 302 to /login?error=device_conflict, clears both cookies.
- *    The backend handles permanent ban on the next verify attempt.
+ *  Pending-only:  /onboarding            → redirect to dashboard if role set
+ *  Freelancer:    /gigs, /gigs/*         → redirect to /dashboard/freelancer if not freelancer
+ *  Client:        /dashboard/client, /gigs/create → redirect to /dashboard/client if not client
+ *  Any authed:    /dashboard, /dashboard/* (else) → redirect by role
+ *
+ * ── Role cookie (ng_role) ─────────────────────────────────
+ *  Set by /api/auth/verify (login) and /api/auth/role (onboarding).
+ *  NOT httpOnly — middleware reads it to enforce role routes at Edge,
+ *  no DB call required. NOT trusted for authorisation (tRPC procedures
+ *  re-validate via session → DB on every mutation/query).
+ *
+ * ── Device fingerprint (80% block) ───────────────────────
+ *  ng_device cookie: first 32 chars of client SHA-256 fingerprint.
+ *  Middleware computes SHA-256(UA + Accept-Language)[0:32] at Edge
+ *  and compares. Mismatch → clear cookies, redirect to login.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -22,8 +27,9 @@ import { SESSION_COOKIE } from '@/lib/constants';
 
 // ── Cookie names ──────────────────────────────────────────
 const DEVICE_COOKIE = 'ng_device';
+const ROLE_COOKIE   = 'ng_role';
 
-// ── Public routes (no auth required) ─────────────────────
+// ── Public routes ─────────────────────────────────────────
 const PUBLIC_ROUTES = new Set([
   '/',
   '/login',
@@ -33,17 +39,23 @@ const PUBLIC_ROUTES = new Set([
   '/api/health',
 ]);
 
-// Prefixes that are always public
 const PUBLIC_PREFIXES = [
   '/_next/',
   '/public/',
   '/favicon',
-  '/api/auth/',   // all /api/auth/* routes handle their own auth
-  '/auth/',       // /auth/verify page
+  '/api/auth/',
+  '/auth/',
 ];
 
-// ── Edge-computable partial fingerprint ───────────────────
-// SubtleCrypto is available in the Edge runtime via globalThis.crypto.subtle
+// ── Role → home dashboard ─────────────────────────────────
+const ROLE_HOME: Record<string, string> = {
+  freelancer: '/dashboard/freelancer',
+  client:     '/dashboard/client',
+  admin:      '/dashboard/client',   // admins use client dashboard for now
+  pending:    '/onboarding',
+};
+
+// ── Edge partial fingerprint ──────────────────────────────
 async function edgePartialHash(req: NextRequest): Promise<string> {
   const ua   = req.headers.get('user-agent')      ?? '';
   const lang = req.headers.get('accept-language') ?? '';
@@ -58,46 +70,91 @@ async function edgePartialHash(req: NextRequest): Promise<string> {
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  // Always allow public prefixes
+  // ── Always allow public prefixes & routes ─────────────────
   if (PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return NextResponse.next();
-
-  // Always allow exact public routes
   if (PUBLIC_ROUTES.has(pathname)) return NextResponse.next();
 
-  // ── Session check ───────────────────────────────────────
+  // ── Session gate ──────────────────────────────────────────
   const sessionToken = req.cookies.get(SESSION_COOKIE)?.value;
-
   if (!sessionToken) {
-    // Unauthenticated — redirect to login, preserve intended destination
-    const loginUrl = new URL('/login', req.url);
-    loginUrl.searchParams.set('next', pathname);
-    return NextResponse.redirect(loginUrl);
+    const url = new URL('/login', req.url);
+    url.searchParams.set('next', pathname);
+    return NextResponse.redirect(url);
   }
 
-  // ── Device fingerprint — 80% block ──────────────────────
-  // Only enforce if the device cookie already exists (it's set on first verify).
-  // On the very first login the cookie won't exist yet — that's fine.
+  // ── Device fingerprint — 80% block ───────────────────────
   const deviceCookie = req.cookies.get(DEVICE_COOKIE)?.value;
-
   if (deviceCookie) {
-    const partialHash   = await edgePartialHash(req);
-    const storedFirst32 = deviceCookie.slice(0, 32);
-    const edgeFirst32   = partialHash.slice(0, 32);
-
-    if (storedFirst32 !== edgeFirst32) {
-      // UA / language mismatch — likely stolen cookie or different device.
-      // Flush both cookies and redirect; backend will permanently ban on
-      // the next /auth/verify call from the true device.
-      const loginUrl = new URL('/login', req.url);
-      loginUrl.searchParams.set('error', 'device_conflict');
-      const blocked = NextResponse.redirect(loginUrl);
+    const partialHash = await edgePartialHash(req);
+    if (deviceCookie.slice(0, 32) !== partialHash.slice(0, 32)) {
+      const url = new URL('/login', req.url);
+      url.searchParams.set('error', 'device_conflict');
+      const blocked = NextResponse.redirect(url);
       blocked.cookies.delete(SESSION_COOKIE);
       blocked.cookies.delete(DEVICE_COOKIE);
+      blocked.cookies.delete(ROLE_COOKIE);
       return blocked;
     }
   }
 
-  // ── Forward tokens to server components ──────────────────
+  // ── Role-based routing ────────────────────────────────────
+  const role = req.cookies.get(ROLE_COOKIE)?.value ?? 'pending';
+
+  // /onboarding — only for pending users; others go to their dashboard
+  if (pathname === '/onboarding') {
+    if (role !== 'pending') {
+      return NextResponse.redirect(new URL(ROLE_HOME[role] ?? '/dashboard/freelancer', req.url));
+    }
+    return passThrough(req, sessionToken, deviceCookie);
+  }
+
+  // /gigs and /gigs/* (except /gigs/create which is client-only)
+  if (pathname.startsWith('/gigs')) {
+    if (pathname === '/gigs/create') {
+      // Clients post gigs
+      if (role !== 'client' && role !== 'admin') {
+        return NextResponse.redirect(new URL(ROLE_HOME[role] ?? '/dashboard/freelancer', req.url));
+      }
+    } else {
+      // Freelancers browse/view gigs
+      if (role !== 'freelancer' && role !== 'admin') {
+        return NextResponse.redirect(new URL(ROLE_HOME[role] ?? '/dashboard/client', req.url));
+      }
+    }
+    return passThrough(req, sessionToken, deviceCookie);
+  }
+
+  // /dashboard/freelancer — freelancer-only
+  if (pathname.startsWith('/dashboard/freelancer')) {
+    if (role !== 'freelancer' && role !== 'admin') {
+      return NextResponse.redirect(new URL(ROLE_HOME[role] ?? '/login', req.url));
+    }
+    return passThrough(req, sessionToken, deviceCookie);
+  }
+
+  // /dashboard/client — client-only
+  if (pathname.startsWith('/dashboard/client')) {
+    if (role !== 'client' && role !== 'admin') {
+      return NextResponse.redirect(new URL(ROLE_HOME[role] ?? '/login', req.url));
+    }
+    return passThrough(req, sessionToken, deviceCookie);
+  }
+
+  // /dashboard (generic) — redirect to role-appropriate dashboard
+  if (pathname === '/dashboard' || pathname === '/dashboard/') {
+    return NextResponse.redirect(new URL(ROLE_HOME[role] ?? '/login', req.url));
+  }
+
+  // All other protected routes — just require session (role checked by tRPC)
+  return passThrough(req, sessionToken, deviceCookie);
+}
+
+// ── Forward session + device tokens to server components ──
+function passThrough(
+  req: NextRequest,
+  sessionToken: string,
+  deviceCookie: string | undefined,
+): NextResponse {
   const res = NextResponse.next();
   res.headers.set('x-session-token', sessionToken);
   if (deviceCookie) res.headers.set('x-device-hash', deviceCookie);
@@ -106,7 +163,6 @@ export async function middleware(req: NextRequest) {
 
 export const config = {
   matcher: [
-    // Run on all routes except static files
     '/((?!_next/static|_next/image|favicon\\.ico|.*\\.png|.*\\.jpg|.*\\.svg).*)',
   ],
 };
