@@ -2,6 +2,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import { getDeviceHash } from '@/lib/device';
 
 type Status = 'verifying' | 'success' | 'error';
 
@@ -12,6 +13,7 @@ const ERROR_LABELS: Record<string, string> = {
   too_many_attempts: 'Too many failed attempts. Please request a new link.',
   banned:            'This account has been suspended. Contact support@nepalgig.com.',
   phone_mismatch:    'Phone number mismatch. Please use the correct link.',
+  device_conflict:   'Login blocked: device fingerprint conflict detected. Your account has been flagged for security review.',
   server_error:      'A server error occurred. Please try again.',
 };
 
@@ -38,10 +40,14 @@ function VerifyContent() {
 
   async function verifyToken() {
     try {
+      // Compute full device fingerprint — this is the authoritative hash
+      // that gets stored in the DB and in the ng_device cookie
+      const deviceHash = await getDeviceHash();
+
       const res  = await fetch('/api/auth/verify', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ token, phone }),
+        body:    JSON.stringify({ token, phone, deviceHash }),
       });
       const data = await res.json() as {
         success?: boolean;

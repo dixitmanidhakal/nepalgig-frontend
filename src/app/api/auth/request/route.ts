@@ -2,18 +2,22 @@
  * POST /api/auth/request
  * Proxies to backend → returns { loginUrl, expiresAt, isNewUser, phone }
  *
- * Body: { phone: string }  e.g. "9812345678" or "+9779812345678"
+ * Body: { phone: string, deviceHash?: string }
+ *   phone      — "9812345678" or "+9779812345678"
+ *   deviceHash — 64-char SHA-256 hex from client-side device fingerprint
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 
 const schema = z.object({
-  phone: z.string().min(7).max(20),
+  phone:      z.string().min(7).max(20),
+  // SHA-256 hex produced by getDeviceHash() in lib/device.ts
+  deviceHash: z.string().length(64).regex(/^[0-9a-f]{64}$/).optional(),
 });
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as { phone?: string };
+    const body   = await req.json() as { phone?: string; deviceHash?: string };
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json({ error: 'invalid_phone' }, { status: 400 });
@@ -28,9 +32,10 @@ export async function POST(req: NextRequest) {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
-        phone:     parsed.data.phone,
-        ipAddress: ip,
-        userAgent: req.headers.get('user-agent') ?? '',
+        phone:      parsed.data.phone,
+        deviceHash: parsed.data.deviceHash,
+        ipAddress:  ip,
+        userAgent:  req.headers.get('user-agent') ?? '',
       }),
     });
 

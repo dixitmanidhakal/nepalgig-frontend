@@ -3,12 +3,14 @@
 import { useState, Suspense, useEffect, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { getDeviceHash } from '@/lib/device';
 
 // ── Error messages ────────────────────────────────────────
 const ERROR_LABELS: Record<string, string> = {
   invalid_phone:     '❌ Invalid Nepal phone number. Use format: 98XXXXXXXX',
   rate_limited:      '⏳ Too many requests. Please wait 1 hour and try again.',
   banned:            '🚫 This account has been suspended. Contact support.',
+  device_conflict:   '🔒 Login blocked: this session was opened on a different device. Please log in again from your original device.',
   invalid:           '❌ Invalid login link. Please request a new one.',
   expired:           '⏰ This link expired (15 min TTL). Request a new one.',
   used:              '✅ This link was already used. Request a new one.',
@@ -102,10 +104,13 @@ function LoginForm() {
     setLoginUrl('');
 
     try {
+      // Collect device fingerprint before the request
+      const deviceHash = await getDeviceHash();
+
       const res  = await fetch('/api/auth/request', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ phone }),
+        body:    JSON.stringify({ phone, deviceHash }),
       });
       const data = await res.json() as {
         success?: boolean;
